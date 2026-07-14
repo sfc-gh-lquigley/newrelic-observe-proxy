@@ -1,0 +1,44 @@
+# Directories
+target/
+*.class
+*.jar
+!newrelic.jar
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+*.tfvars
+!terraform.tfvars.example
+
+# Secrets
+*.pem
+*.key
+!ssl/*.pem
+
+# Logs
+*.log
+logs/
+
+# AWS
+.aws-credentials
+
+# Environment
+.env
+*.env
+
+# Build artifacts
+dist/
+build/

@@ -1,0 +1,19 @@
+# Example Terraform variables
+# Copy this to terraform.tfvars and fill in your values
+
+# AWS Configuration
+aws_region     = "us-west-2"
+key_pair_name  = "your-ec2-key-pair-name"
+
+# Security
+allowed_ssh_cidrs = ["YOUR_IP/32"]  # Restrict SSH to your IP
+
+# Instance types
+nginx_instance_type = "t3.small"  # 2 vCPU, 2GB RAM (~$15/month)
+java_instance_type  = "t3.small"  # 2 vCPU, 2GB RAM (~$15/month)
+
+# Observe Configuration
+observe_token         = "your-observe-datastream-token"
+observe_endpoint_host = "123456789012.collect.observeinc.com"
+
+# Total estimated cost: ~$30/month for both instances

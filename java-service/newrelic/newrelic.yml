@@ -1,0 +1,72 @@
+#
+# NewRelic Agent Configuration for Nginx Proxy Testing
+#
+# This configuration points the agent to a custom nginx endpoint
+# instead of NewRelic's SaaS collector.
+#
+
+common: &default_settings
+  # Application name (appears in NewRelic UI and in span attributes)
+  app_name: Java7-Test-Service
+
+  # License key - not validated when pointing to custom endpoint
+  # Use a dummy key since we're not sending to NewRelic
+  license_key: dummy-test-key-12345-not-validated
+
+  # CUSTOM ENDPOINT: Point to nginx proxy instead of NewRelic
+  # Override this with environment variable: NEW_RELIC_HOST
+  host: '${NGINX_HOST:localhost}'
+  port: 443
+  ssl: true
+
+  # Don't try to send data on JVM exit (reduces shutdown time)
+  send_data_on_exit: false
+  
+  # Proxy settings (leave null to go direct)
+  proxy_host: null
+  proxy_port: null
+
+  # Logging
+  log_level: info
+  log_file_name: newrelic_agent.log
+  log_file_path: ./logs
+
+  # Transaction tracer settings
+  transaction_tracer:
+    enabled: true
+    transaction_threshold: apdex_f
+    record_sql: obfuscated
+    explain_enabled: true
+    explain_threshold: 500
+    stack_trace_threshold: 500
+    
+  # Distributed tracing (for cross-service traces)
+  distributed_tracing:
+    enabled: true
+
+  # Span events (what we're testing)
+  span_events:
+    enabled: true
+    max_samples_stored: 2000
+
+  # Error collector
+  error_collector:
+    enabled: true
+    ignore_status_codes: [404]
+
+  # Thread profiler
+  thread_profiler:
+    enabled: false
+
+  # Browser monitoring (disable for backend service)
+  browser_monitoring:
+    auto_instrument: false
+
+# Environment-specific overrides
+development:
+  <<: *default_settings
+  log_level: finer
+
+production:
+  <<: *default_settings
+  log_level: info
