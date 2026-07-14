@@ -245,95 +245,11 @@ common:
 
 **That's it** - no code changes, just config + restart per service.
 
-### Phased Rollout Strategy
+### Rollout Strategy
 
-**DO NOT update all 200 services at once.** Use this timeline:
+**DO NOT update all 200 services at once.** Start with 10 pilot services, then roll out in batches (e.g., 25-50 services per batch). Wait 24 hours between batches to catch issues early. Expect 4-5 weeks total.
 
-#### Week 1: Infrastructure + Pilot (10 services)
-
-**Day 1-2: Deploy Infrastructure**
-1. Deploy HA nginx setup with ALB
-2. Configure DNS and SSL certificates
-3. Set up monitoring/alerting
-4. Load test nginx with expected throughput (200K spans/min)
-
-**Day 3-5: Pilot Rollout**
-1. Select 10 low-risk, non-critical services
-2. Update their `newrelic.yml` and restart
-3. Verify spans appear in Observe
-4. Build initial OPAL queries for data flattening
-5. Create dashboards for your team
-
-**Day 6-7: Validation**
-- Monitor pilot services for 48 hours
-- Check for errors, dropped spans, performance issues
-- Get team feedback on Observe vs NewRelic UI
-
-**Go/No-Go Decision:** Proceed only if pilot is successful.
-
-#### Week 2: First Wave (50 services)
-
-**Batch 1 (25 services):**
-- Update on Monday morning
-- Monitor for 24 hours
-- Fix any issues before next batch
-
-**Batch 2 (25 services):**
-- Update on Wednesday/Thursday
-- Monitor for 24 hours
-
-#### Week 3: Second Wave (80 services)
-
-**Batch 3 (40 services):**
-- Update Monday/Tuesday
-- Monitor for 24 hours
-
-**Batch 4 (40 services):**
-- Update Thursday/Friday
-- Monitor through weekend
-
-#### Week 4: Final Wave (60 services)
-
-**Batch 5 (30 services):**
-- Update on Tuesday
-- Monitor for 24 hours
-
-**Batch 6 (30 services):**
-- Update on Thursday
-- Monitor through weekend
-
-#### Week 5: Validation & Cleanup
-
-1. **Verify all 200 services migrated**
-   - Check service inventory
-   - Confirm span volume matches expectations
-   - No services still pointing to NewRelic SaaS
-
-2. **Performance validation**
-   - Review nginx capacity metrics
-   - Check Observe ingest is stable
-   - Verify OPAL queries performing well
-
-3. **Cancel NewRelic subscription**
-   - Export any historical data you need
-   - Close NewRelic account
-   - Remove NewRelic endpoints from network allowlists
-
-### Capacity Planning
-
-**Expected load for 200 services:**
-- Assume ~1000 spans/min per service
-- Total: 200K spans/min = 3,333 spans/sec
-
-**Nginx sizing:**
-- 2× t3.large (2 vCPU, 8GB) can handle ~5K req/sec
-- Add 3rd instance for headroom
-- Enable auto-scaling for traffic spikes
-
-**Network bandwidth:**
-- Each span ~2KB
-- 200K spans/min × 2KB = ~400MB/min = ~7MB/sec
-- Ensure ALB and nginx have sufficient bandwidth
+**Capacity planning:** 200 services × 1000 spans/min = 200K spans/min (3,333/sec). Use 2-3× t3.large nginx instances with auto-scaling.
 
 ### Pre-Flight Checklist
 
@@ -418,47 +334,13 @@ Consider automating this with Ansible/Salt/Puppet across all hosts.
 
 ### Rollback Plan
 
-If issues arise, **rollback is simple per service:**
-
-**Revert newrelic.yml:**
-```yaml
-# Change back to NewRelic SaaS
-common:
-  host: 'collector.newrelic.com'
-  port: 443
-  license_key: '<real-newrelic-key>'
-```
-
-**Restart service** - it immediately reconnects to NewRelic SaaS.
-
-**Keep NewRelic subscription active** until all 200 services are stable on the new proxy for 2+ weeks.
+If issues arise, rollback is simple per service - revert `newrelic.yml` to point back to `collector.newrelic.com` and restart. Keep NewRelic subscription active until all services are stable on the new proxy for 2+ weeks.
 
 ### Timeline & Costs
 
-**Timeline:** 5 weeks for full migration
-- Week 1: Infrastructure + pilot (10 services)
-- Week 2-4: Phased rollout (190 services)
-- Week 5: Validation + cleanup
-
-**Infrastructure Costs:**
-- 3× t3.large nginx instances: ~$150/month
-- Application Load Balancer: ~$30/month
-- Data transfer: ~$20/month
-- **Total: ~$200/month**
-
-**Savings:**
-- NewRelic SaaS subscription cancellation
-- Net savings = (NewRelic cost) - $200/month
-
-### Post-Migration
-
-After successful migration:
-
-1. **Document the architecture** for future team members
-2. **Update runbooks** with new debugging workflows
-3. **Archive NewRelic historical data** if needed
-4. **Establish SLAs** for nginx proxy uptime
-5. **Plan for Java 8+ migration** (longer-term)
+**Timeline:** 4-5 weeks  
+**Infrastructure:** ~$200/month (3× t3.large + ALB + data transfer)  
+**Savings:** Your NewRelic subscription cost - $200/month
 
 ## Costs
 
