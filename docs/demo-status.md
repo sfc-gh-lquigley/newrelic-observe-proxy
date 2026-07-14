@@ -35,43 +35,80 @@
 ## 🔧 In Progress (Final Issue)
 
 ### Agent Connection Handshake
-**Current Status:** Agent completes SSL handshake and calls preconnect/connect, but hits NullPointerException
+**Current Status:** Agent completes SSL handshake and calls preconnect, but never proceeds to connect call
 
 **What's Working:**
-- Agent successfully contacts nginx over SSL
+- Agent successfully contacts nginx over SSL (SSL handshake complete)
 - Preconnect returns security policies (LASP)
 - Agent receives and parses security policies correctly
+- No SSL or hostname verification errors
 
 **What's Not Working:**
-- Connect response is missing some required field(s)
-- Agent throws NullPointerException after receiving connect response
-- Logs show: `Failed to connect: java.lang.NullPointerException`
+- Agent calls preconnect repeatedly but never calls connect
+- Agent logs show: `Failed to connect: java.lang.NullPointerException`
+- **Key finding:** Agent is not proceeding from preconnect to connect phase
 
-**Current Connect Response:**
+**Current Responses:**
+
+**Preconnect:**
+```json
+{
+  "return_value": {
+    "redirect_host": "",
+    "security_policies": {
+      "record_sql": {"enabled": true},
+      "attributes_include": {"enabled": true},
+      "allow_raw_exception_messages": {"enabled": true},
+      "custom_events": {"enabled": true},
+      "custom_parameters": {"enabled": true}
+    }
+  }
+}
+```
+
+**Connect (not being called by agent):**
 ```json
 {
   "return_value": {
     "agent_run_id": "mock-run-id-12345",
+    "request_headers_map": {},
+    "max_payload_size_in_bytes": 1000000,
     "product_level": 50,
     "collect_traces": true,
     "collect_errors": true,
     "collect_analytics_events": true,
     "collect_span_events": true,
+    "collect_error_events": true,
     "data_report_period": 60,
     "sampling_target": 10,
     "sampling_target_period_in_seconds": 60,
-    "messages": []
+    "apdex_t": 0.5,
+    "messages": [],
+    "event_harvest_config": {
+      "report_period_ms": 60000,
+      "harvest_limits": {
+        "analytic_event_data": 10000,
+        "custom_event_data": 10000,
+        "error_event_data": 100,
+        "span_event_data": 2000
+      }
+    }
   }
 }
 ```
 
+**Investigation Findings:**
+1. Agent v6.5.0 may have specific preconnect response requirements preventing connect call
+2. The NullPointerException might be happening during preconnect processing, not connect
+3. Need to compare with actual NewRelic collector responses to identify discrepancies
+4. Possible that agent v6.5.0 expects different policy structure or additional fields
+
 **Next Steps:**
-1. Research NewRelic Agent v6.5.0 connect response format
-2. Identify missing required fields (likely request_headers_map or event_harvest_config)
-3. Update nginx.conf with complete response
-4. Test agent handshake completion
-5. Verify spans are sent to nginx
-6. Confirm spans forwarded to Observe
+1. Capture actual NewRelic collector preconnect/connect responses for comparison
+2. Test with NewRelic agent audit mode to see what it's expecting
+3. Review NewRelic v6.5.0 source code for preconnect validation logic
+4. Consider testing with newer agent version (v7.x or v8.x) that supports Java 8
+5. Alternative: Use network capture (tcpdump) to see real NewRelic collector protocol
 
 ## Demo Readiness Assessment
 
