@@ -25,8 +25,11 @@ cd /home/ec2-user
 git clone https://github.com/sfc-gh-lquigley/newrelic-observe-proxy.git
 cd newrelic-observe-proxy/nginx-proxy
 
-# Generate self-signed SSL certificate
-./generate-cert.sh
+# Get the private IP of this instance
+PRIVATE_IP=$(ec2-metadata --local-ipv4 | cut -d' ' -f2)
+
+# Generate self-signed SSL certificate with SAN for this IP
+./generate-cert.sh "$PRIVATE_IP"
 
 # Build and run nginx container
 docker build -t newrelic-nginx-proxy .
