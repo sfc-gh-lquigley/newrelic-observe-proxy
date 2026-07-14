@@ -1,10 +1,11 @@
-# Use Java 7 base image (OpenJDK 7 from an older Ubuntu)
-FROM openjdk:7-jdk
+# Use Java 8 base image (Amazon Corretto)
+# Note: OpenJDK 7 images are no longer available on Docker Hub
+# NewRelic Agent v6.5.0 supports both Java 7 and 8
+FROM amazoncorretto:8
 
 # Install Maven
-RUN apt-get update && \
-    apt-get install -y maven && \
-    rm -rf /var/lib/apt/lists/*
+RUN yum install -y maven && \
+    yum clean all
 
 # Install Tomcat 7
 ENV CATALINA_HOME /usr/local/tomcat
@@ -31,8 +32,9 @@ RUN cp target/java7-test-service.war $CATALINA_HOME/webapps/
 
 # Copy NewRelic agent (Note: You'll need to download this separately)
 # NewRelic Java Agent v6.5.0 - last version with Java 7 support
-COPY newrelic/newrelic.jar /app/newrelic/newrelic.jar
+# IMPORTANT: Copy config BEFORE extracting zip to prevent overwrite
 COPY newrelic/newrelic.yml /app/newrelic/newrelic.yml
+COPY newrelic/newrelic.jar /app/newrelic/newrelic.jar
 
 # Create logs directory
 RUN mkdir -p /app/logs

@@ -24,7 +24,7 @@ cd newrelic-observe-proxy/java-service
 # Download NewRelic Java Agent v6.5.0
 echo "Downloading NewRelic Java Agent v6.5.0..."
 wget -q https://download.newrelic.com/newrelic/java-agent/newrelic-agent/6.5.0/newrelic-java-6.5.0.zip
-unzip -q newrelic-java-6.5.0.zip
+unzip -o -q newrelic-java-6.5.0.zip
 cp newrelic/newrelic.jar newrelic/
 rm -rf newrelic-java-6.5.0.zip newrelic/
 
