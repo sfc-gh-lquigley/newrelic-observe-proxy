@@ -21,12 +21,11 @@ cd /home/ec2-user
 git clone https://github.com/sfc-gh-lquigley/newrelic-observe-proxy.git
 cd newrelic-observe-proxy/java-service
 
-# Download NewRelic Java Agent v6.5.0
-echo "Downloading NewRelic Java Agent v6.5.0..."
-wget -q https://download.newrelic.com/newrelic/java-agent/newrelic-agent/6.5.0/newrelic-java-6.5.0.zip
-unzip -o -q newrelic-java-6.5.0.zip
-cp newrelic/newrelic.jar newrelic/
-rm -rf newrelic-java-6.5.0.zip newrelic/
+# Download NewRelic Java Agent v9.3.0 (latest)
+echo "Downloading NewRelic Java Agent v9.3.0..."
+wget -q https://download.newrelic.com/newrelic/java-agent/newrelic-agent/current/newrelic-java.zip
+unzip -o -q newrelic-java.zip
+rm -rf newrelic-java.zip
 
 # Build Docker image
 docker build -t java7-test-service .

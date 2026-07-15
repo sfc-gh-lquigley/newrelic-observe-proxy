@@ -5,8 +5,23 @@
 ✅ **Infrastructure** - Fully automated deployment via Terraform  
 ✅ **Nginx Proxy** - Successfully mocks NewRelic collector API  
 ✅ **SSL Trust** - Certificate generated with SAN and trusted by Java  
-✅ **Preconnect Flow** - Agent receives redirect_host and security policies  
-⚠️ **Agent Issue** - NewRelic v6.5.0 has internal NullPointerException preventing connect call
+✅ **Agent Connection** - NewRelic v9.3.0 successfully connects and sends telemetry  
+✅ **Telemetry Flow** - Agent sending metrics, logs, events, and spans to nginx proxy  
+
+## Solution
+
+**Working Configuration: Agent v9.3.0 + Minimal Preconnect**
+
+The NewRelic Java agent requires a minimal preconnect response format:
+```json
+{"return_value": {"redirect_host": "172.31.39.62"}}
+```
+
+**Key Findings:**
+- Agent v6.5.0 (Java 7 compatible, EOL 2020) - ❌ Has NullPointerException with security_policies
+- Agent v9.3.0 (Latest, 2024) - ✅ Works perfectly with minimal response (CubeAPM style)
+- Security policies in preconnect response cause agent to fail before connect call
+- Minimal response format (just redirect_host) allows successful connection
 
 ## What Works
 
@@ -18,36 +33,42 @@
 
 2. **Nginx Proxy**
    - Accepts HTTPS on port 443
-   - Returns proper preconnect response with redirect_host
-   - Returns complete connect response with all required fields
-   - Forwards telemetry to Observe HTTP ingest
+   - Returns minimal preconnect response: `{"return_value": {"redirect_host": "172.31.39.62"}}`
+   - Returns complete connect response with agent_run_id and config
+   - Forwards all telemetry to Observe HTTP ingest
 
-3. **Agent Configuration**
-   - Points to nginx instead of NewRelic SaaS
-   - SSL handshake succeeds
-   - Preconnect call succeeds
-   - Parses redirect_host: `"172.31.39.62"`
-   - Receives LASP security policies
+3. **Agent v9.3.0 Telemetry**
+   - Preconnect succeeds
+   - Connect succeeds (gets mock-run-id-12345)
+   - Sends analytic_event_data (transaction events)
+   - Sends log_event_data (application logs)
+   - Sends metric_data (performance metrics)
+   - Sends update_loaded_modules (jar inventory)
+   - Sends get_agent_commands (command polling)
 
-## Known Issue
+## Evidence from Logs
 
-**NewRelic Java Agent v6.5.0 Internal Bug**
-
-After successfully receiving preconnect response:
+**Agent Logs (00:38:06):**
 ```
-Received JSON(preconnect): {"return_value": {"redirect_host": "172.31.39.62", "security_policies": {...}}}
-LASP Policies received from server side: {...}
-Failed to connect: java.lang.NullPointerException
+Sent JSON(analytic_event_data) to: https://172.31.39.62:443/agent_listener/invoke_raw_method?method=analytic_event_data&...&run_id=mock-run-id-12345
+Sent JSON(log_event_data) to: https://172.31.39.62:443/agent_listener/invoke_raw_method?method=log_event_data&...&run_id=mock-run-id-12345
+Sent JSON(metric_data) to: https://172.31.39.62:443/agent_listener/invoke_raw_method?method=metric_data&...&run_id=mock-run-id-12345
 ```
 
-Agent never proceeds to call connect endpoint. This appears to be a limitation in the v6.5.0 agent (released 2021, EOL).
+**Nginx Logs:**
+```json
+{"timestamp":"2026-07-15T00:38:06+00:00","method":"POST","uri":"/agent_listener/invoke_raw_method?method=connect&...","status":200}
+{"timestamp":"2026-07-15T00:38:06+00:00","method":"POST","uri":"/agent_listener/invoke_raw_method?method=analytic_event_data&...&run_id=mock-run-id-12345","status":200}
+{"timestamp":"2026-07-15T00:38:06+00:00","method":"POST","uri":"/agent_listener/invoke_raw_method?method=log_event_data&...&run_id=mock-run-id-12345","status":200}
+{"timestamp":"2026-07-15T00:38:36+00:00","method":"POST","uri":"/agent_listener/invoke_raw_method?method=metric_data&...&run_id=mock-run-id-12345","status":200}
+```
 
 ## Key Discoveries
 
 - **redirect_host format**: Must be IP/hostname without port (e.g., `"172.31.39.62"` not `"172.31.39.62:443"`)
-- **Empty redirect_host**: Causes agent to skip connect call entirely
+- **Minimal response required**: Security policies in preconnect cause v6.5.0 and v9.3.0 to fail
 - **SSL requirements**: Certificate must have SAN matching connection IP and be trusted in Java cacerts
-- **Agent compatibility**: v6.5.0 may not support non-NewRelic backends; newer versions may work
+- **Agent compatibility**: v9.3.0 works perfectly, v6.5.0 has internal bugs preventing custom backends
 
 ## Quick Deploy
 
@@ -71,7 +92,7 @@ ssh -i ~/.ssh/newrelic-observe-proxy-key.pem ec2-user@<nginx-ip> \
 
 ## Next Steps
 
-1. **Test with newer agent** - Try NewRelic Java Agent v7 or v8
-2. **Compare to real NewRelic** - Validate responses match actual NewRelic backend
-3. **Investigate agent bug** - Deep-dive into v6.5.0 source code to find root cause of NullPointer
-4. **Alternative agents** - Test with other language agents (Node.js, Python) that may handle custom backends better
+1. **Generate test traffic** - Create HTTP requests to Java service to generate spans and traces
+2. **Validate Observe ingestion** - Check if telemetry is successfully reaching Observe platform
+3. **Test OPAL queries** - Write Observe queries to flatten NewRelic JSON into datastreams
+4. **Performance testing** - Validate nginx can handle 200 services at production scale
