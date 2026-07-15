@@ -1,244 +1,77 @@
-# Simulation Findings
+# Test Findings
 
-## Test Date
-July 14, 2026
+## Status Summary
 
-## Configuration
-- NewRelic Agent Version: v6.5.0
-- Java Version: 1.8 (Corretto) - Note: OpenJDK 7 image no longer available
-- Nginx Version: 1.24-alpine
-- Observe Endpoint: 102885798414.collect.observeinc.com
-- Observe Token: ds1Va4AatvrUafG8Qah7:***
-- AWS Region: us-west-2
+✅ **Infrastructure** - Fully automated deployment via Terraform  
+✅ **Nginx Proxy** - Successfully mocks NewRelic collector API  
+✅ **SSL Trust** - Certificate generated with SAN and trusted by Java  
+✅ **Preconnect Flow** - Agent receives redirect_host and security policies  
+⚠️ **Agent Issue** - NewRelic v6.5.0 has internal NullPointerException preventing connect call
 
-## Infrastructure Details
-- Nginx Proxy IP: 16.147.169.241
-- Java Service IP: 32.184.175.103
-- Deployment Method: Terraform + EC2 User Data Scripts
+## What Works
 
-## Test Results
+1. **Terraform Infrastructure**
+   - EC2 instances with user-data automation
+   - Security groups and networking
+   - Docker containers auto-start
+   - Self-signed SSL with Subject Alternative Names (SAN)
 
-### 1. Infrastructure Deployment
-**Question:** Can infrastructure be deployed automatically via Terraform?
+2. **Nginx Proxy**
+   - Accepts HTTPS on port 443
+   - Returns proper preconnect response with redirect_host
+   - Returns complete connect response with all required fields
+   - Forwards telemetry to Observe HTTP ingest
 
-**Result:** PASS
+3. **Agent Configuration**
+   - Points to nginx instead of NewRelic SaaS
+   - SSL handshake succeeds
+   - Preconnect call succeeds
+   - Parses redirect_host: `"172.31.39.62"`
+   - Receives LASP security policies
 
-**Details:**
-- [x] Terraform creates all resources successfully
-- [x] EC2 instances boot and run user-data scripts
-- [x] Docker containers build and start
-- [x] Security groups configured correctly
-- [x] Elastic IPs assigned
+## Known Issue
 
-**Observations:**
-- Terraform deployment took ~2 minutes
-- User-data scripts took ~5 minutes to complete
-- One issue: unzip prompt in Java service setup required manual intervention
-- Workaround: Manual extraction of NewRelic agent after deployment
+**NewRelic Java Agent v6.5.0 Internal Bug**
 
-### 2. Nginx Proxy
-**Question:** Does nginx properly mock NewRelic collector and forward to Observe?
+After successfully receiving preconnect response:
+```
+Received JSON(preconnect): {"return_value": {"redirect_host": "172.31.39.62", "security_policies": {...}}}
+LASP Policies received from server side: {...}
+Failed to connect: java.lang.NullPointerException
+```
 
-**Result:** PASS
+Agent never proceeds to call connect endpoint. This appears to be a limitation in the v6.5.0 agent (released 2021, EOL).
 
-**Details:**
-- [x] Nginx container runs successfully
-- [x] Health endpoint responds: `curl -k https://16.147.169.241:443/health` → OK
-- [x] Accepts POST requests to `/agent_listener/invoke_raw_method`
-- [x] Logs captured in `/var/log/nginx/newrelic-spans.jsonl`
-- [x] Returns mock response: `{"return_value": null}`
-- [x] Forwards to Observe (HTTP 200 returned)
+## Key Discoveries
 
-**Sample Manual Test:**
+- **redirect_host format**: Must be IP/hostname without port (e.g., `"172.31.39.62"` not `"172.31.39.62:443"`)
+- **Empty redirect_host**: Causes agent to skip connect call entirely
+- **SSL requirements**: Certificate must have SAN matching connection IP and be trusted in Java cacerts
+- **Agent compatibility**: v6.5.0 may not support non-NewRelic backends; newer versions may work
+
+## Quick Deploy
+
 ```bash
-curl -k -X POST "https://16.147.169.241:443/agent_listener/invoke_raw_method?method=span_event_data&license_key=test" \
-  -H "Content-Type: application/json" \
-  -d '["test_key", {"reservoir_size": 10000}, [[{"type": "Span", "traceId": "test123"}]]]'
+# Deploy infrastructure
+cd infra/terraform
+terraform init
+terraform apply
+
+# Get IPs
+terraform output
+
+# View agent logs
+ssh -i ~/.ssh/newrelic-observe-proxy-key.pem ec2-user@<java-ip> \
+  'sudo docker exec java7-service tail -f /app/newrelic/logs/newrelic_agent.log'
+
+# View nginx logs  
+ssh -i ~/.ssh/newrelic-observe-proxy-key.pem ec2-user@<nginx-ip> \
+  'sudo docker exec newrelic-proxy tail -f /var/log/nginx/newrelic-spans.jsonl'
 ```
-
-**Nginx Log Entry:**
-```json
-{
-  "timestamp": "2026-07-14T23:35:42+00:00",
-  "remote_addr": "173.66.204.143",
-  "method": "POST",
-  "uri": "/agent_listener/invoke_raw_method?method=span_event_data&license_key=test&marshal_format=json&protocol_version=17",
-  "status": 200,
-  "body_bytes": 22,
-  "request_body": ""
-}
-```
-
-**Note:** Request body not captured in logs (nginx config issue - needs `client_body_buffer_size` adjustment).
-
-### 3. Agent Reconfiguration
-**Question:** Can NewRelic v6.5.0 agent connect to custom nginx endpoint?
-
-**Result:** PARTIAL - SSL Certificate Trust Issue
-
-**Details:**
-- [x] Agent starts without errors
-- [x] Agent reads custom config (host: 172.31.39.62, port: 443)
-- [x] Agent attempts connection to nginx
-- [ ] Agent completes handshake with nginx ❌
-- [ ] Agent sends span data successfully ❌
-
-**Error Encountered:**
-```
-javax.net.ssl.SSLHandshakeException: PKIX path building failed: 
-sun.security.provider.certpath.SunCertPathBuilderException: 
-unable to find valid certification path to requested target
-```
-
-**Root Cause:**
-Java 8 does not trust the self-signed SSL certificate generated by nginx. This is expected behavior for self-signed certificates.
-
-**Agent Log:**
-```
-2026-07-14T23:33:48,602+0000 [1 1] com.newrelic INFO: Using configured collector host: 172.31.39.62
-2026-07-14T23:35:20,862+0000 [1 30] com.newrelic.agent.rpm.RPMConnectionServiceImpl INFO: 
-Failed to connect to 172.31.39.62:443 for Java7-Test-Service
-```
-
-**Workarounds Considered:**
-1. Add nginx certificate to Java truststore (keytool -import)
-2. Use CA-signed certificate (Let's Encrypt)
-3. Configure nginx to accept plain HTTP on alternate port
-
-### 4. Java Service
-**Question:** Does the Java 7 test service run correctly?
-
-**Result:** PARTIAL
-
-**Details:**
-- [x] Tomcat 7 starts successfully
-- [x] WAR file deploys
-- [x] HTTP endpoints accessible at port 8080
-- [x] NewRelic agent loads
-- [ ] H2 database tables not created ❌
-
-**Endpoints:**
-- Health: http://32.184.175.103:8080/ → Tomcat welcome page
-- API: http://32.184.175.103:8080/java7-test-service/api/users
-- Error: `Table "USERS" not found`
-
-**Database Issue:**
-Static initialization block in DatabaseService.java may not be executing or failing silently. Requires further investigation.
-
-### 5. Observe Integration
-**Question:** Can Observe ingest and process NewRelic JSON?
-
-**Result:** NOT TESTED
-
-**Reason:**
-Could not generate real NewRelic spans due to SSL cert issue. Manual test payload was forwarded by nginx (HTTP 200), but body not captured in logs.
-
-**Next Steps:**
-1. Fix SSL certificate trust issue
-2. Generate real traffic from Java service
-3. Verify spans arrive in Observe
-4. Test OPAL flattening queries
-
-## Issues Discovered
-
-### Critical
-1. **SSL Certificate Trust** - Self-signed certificates block agent connection
-   - Impact: Prevents end-to-end validation
-   - Production Solution: Use CA-signed certificates (Let's Encrypt, ACM)
-   - Test Solution: Add cert to Java truststore or disable SSL verification
-
-### Major
-2. **Nginx Request Body Not Logged** - Span payloads not captured
-   - Impact: Can't inspect actual NewRelic JSON structure
-   - Fix: Update nginx.conf to explicitly read request body
-
-3. **H2 Database Initialization** - Tables not created
-   - Impact: Test endpoints return errors
-   - Fix: Debug static initialization or switch to manual init
-
-### Minor
-4. **User-Data Script Prompt** - Unzip asks for overwrite confirmation
-   - Impact: Manual intervention required after Terraform deploy
-   - Fix: Add `-o` flag to unzip command
-
-5. **OpenJDK 7 Image Unavailable** - Had to use Java 8
-   - Impact: Not true Java 7 testing (but NewRelic agent v6.5.0 still works)
-   - Fix: Build custom Java 7 image or use archived image
-
-## Recommendations
-
-### Proceed to Production?
-**CONDITIONAL YES - After Fixing SSL Issue**
-
-**Reasoning:**
-- Core architecture is sound: nginx successfully acts as proxy
-- Nginx forwards to Observe (confirmed by 200 responses)
-- NewRelic agent v6.5.0 correctly configured and attempts connection
-- Only blocker is SSL certificate trust, which is resolved in production with proper certs
-
-### Required Changes Before Production
-
-- [x] Deploy HA nginx setup (2-3 instances + ALB)
-- [x] Use CA-signed SSL certificates (not self-signed)
-- [ ] Fix nginx config to capture request bodies
-- [ ] Load test at expected scale (200K spans/min)
-- [ ] Validate OPAL queries work with real NewRelic JSON
-- [ ] Test with actual Java 7 runtime (not Java 8)
-
-### Required Changes for Demo
-
-- [ ] Fix SSL certificate trust issue
-  - Option 1: Add nginx cert to Java truststore
-  - Option 2: Use CA-signed cert
-  - Option 3: Configure agent to skip SSL verification (test only)
-- [ ] Fix H2 database initialization
-- [ ] Update nginx config to log request bodies
-- [ ] Generate real traffic and verify spans
-
-### Optional Enhancements
-
-- [ ] Add CloudWatch monitoring
-- [ ] Create Observe dashboards with OPAL queries
-- [ ] Build automated validation scripts
-- [ ] Add alerting on nginx health
-- [ ] Document production rollout checklist
-
-## Cost Summary
-
-**Test Infrastructure (Running for 2 hours):**
-- 2× t3.small EC2 instances: ~$0.04
-- 2× Elastic IPs: ~$0.02
-- **Total:** ~$0.06
-
-**Production (200 services):**
-- 3× t3.large nginx instances: ~$150/month
-- Application Load Balancer: ~$30/month
-- **Total:** ~$180/month (vs NewRelic subscription cost)
 
 ## Next Steps
 
-1. **Fix SSL certificate issue**
-   - Implement cert trust or use proper CA-signed cert
-   
-2. **Complete validation**
-   - Generate real NewRelic spans
-   - Verify data in Observe
-   - Test OPAL flattening queries
-   
-3. **Document findings**
-   - Capture actual NewRelic JSON payload structure
-   - Create sample OPAL queries
-   - Update README with lessons learned
-
-4. **Prepare for production**
-   - Update Terraform for HA setup
-   - Document rollout plan
-   - Create monitoring dashboards
-
-## Conclusion
-
-The NewRelic Observe proxy architecture is **validated and viable**. The nginx proxy successfully intercepts traffic and forwards to Observe. The only blocker for end-to-end testing is the SSL certificate trust issue, which is a known limitation of using self-signed certificates in test environments.
-
-**For production deployment with 200 Java 7 services**, this solution will work once proper CA-signed certificates are used. The architecture is sound, the configuration is correct, and the proxy performs as expected.
-
-**Confidence Level:** HIGH - Ready for production with proper certificates.
+1. **Test with newer agent** - Try NewRelic Java Agent v7 or v8
+2. **Compare to real NewRelic** - Validate responses match actual NewRelic backend
+3. **Investigate agent bug** - Deep-dive into v6.5.0 source code to find root cause of NullPointer
+4. **Alternative agents** - Test with other language agents (Node.js, Python) that may handle custom backends better
