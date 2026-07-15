@@ -2,34 +2,49 @@
 
 Nginx proxy that forwards NewRelic agent telemetry to Observe. Bridge solution for legacy Java 7 services during migration.
 
+## Agent Version Compatibility
+
+**Critical Finding**: NewRelic agent version significantly impacts custom backend compatibility.
+
+| Version | Status | Notes |
+|---------|--------|-------|
+| **v6.5.0** (2020, EOL) | ❌ **Doesn't Work** | Internal NullPointerException after preconnect. Never calls connect endpoint. Last Java 7 compatible version. |
+| **v9.3.0** (2024, latest) | ✅ **Works** | Successfully connects with minimal preconnect response. Sends all telemetry data. |
+
+**Recommendation**: Use v9.3.0 if your applications support Java 8+. If stuck on Java 7, this solution may not work with v6.5.0 without agent patching.
+
 ## Problem
 
-You have 200 Java 7 services instrumented with NewRelic agents (v6.5.0), but need to:
+You have 200 Java 7 services instrumented with NewRelic agents, but need to:
 - Migrate observability to Observe
-- Avoid rushing Java 7 → Java 8+ upgrades in 3 months
+- Avoid rushing Java upgrades in 3 months
 - Eliminate NewRelic SaaS subscription costs
 
-**Challenge:** OpenTelemetry requires Java 8+. No modern APM agent supports Java 7.
+**Challenge:** OpenTelemetry requires Java 8+. No modern APM agent supports Java 7. NewRelic v6.5.0 (last Java 7 agent) has bugs preventing custom backend usage.
 
 ## Solution
 
 Reconfigure existing NewRelic agents to send telemetry to a custom nginx endpoint, which forwards raw JSON to Observe's HTTP ingest. No application code changes required.
 
+**Agent Requirements**: 
+- **Preferred**: Upgrade to NewRelic v9.3.0 (requires Java 8+) - fully tested and working
+- **Java 7 fallback**: v6.5.0 has compatibility issues; may require custom agent patches or alternative approach
+
 ## Architecture
 
 ```
 ┌──────────────────────────────────┐
-│  Java 7 Service                  │
+│  Java 7/8 Service                │
 │  ┌────────────────────────────┐  │
 │  │ Your Application           │  │
 │  │                            │  │
-│  │  NewRelic Agent v6.5.0     │  │
+│  │  NewRelic Agent v9.3.0     │  │
 │  │  (configured to nginx)     │  │
 │  └──────────┬─────────────────┘  │
 └─────────────┼─────────────────────┘
               │
               │ POST /agent_listener
-              │ (NewRelic JSON)
+              │ (NewRelic JSON + gzip)
               ▼
 ┌─────────────────────────────────────┐
 │  Nginx Proxy                        │
@@ -38,7 +53,7 @@ Reconfigure existing NewRelic agents to send telemetry to a custom nginx endpoin
 │  - Forward to Observe               │
 └──────────────┬──────────────────────┘
                │
-               │ HTTP POST (raw JSON)
+               │ HTTP POST (gzip JSON)
                ▼
        ┌──────────────┐
        │   Observe    │
@@ -93,13 +108,13 @@ newrelic-observe-proxy/
 ├── README.md                   # This file
 ├── docs/
 │   └── findings.md             # Test results
-├── java-service/               # Test Java 7 service
+├── java-service/               # Test Java 7/8 service
 │   ├── Dockerfile
 │   ├── pom.xml
 │   ├── src/
 │   ├── newrelic/
 │   │   ├── newrelic.yml
-│   │   └── newrelic.jar        # v6.5.0
+│   │   └── newrelic.jar        # v9.3.0 (downloaded at build)
 │   └── run.sh
 ├── nginx-proxy/                # Nginx configuration
 │   ├── nginx.conf
@@ -223,9 +238,17 @@ newrelic-proxy.internal.yourcompany.com → ALB DNS
 
 ### Service Configuration Rollout
 
-For each of your 200 Java 7 services, update the NewRelic agent configuration:
+For each of your 200 services, update the NewRelic agent configuration:
 
-**Step 1: Update newrelic.yml**
+**Step 1: Upgrade Agent (if needed)**
+If services are on Java 8+, upgrade to NewRelic v9.3.0:
+```bash
+wget https://download.newrelic.com/newrelic/java-agent/newrelic-agent/current/newrelic-java.zip
+unzip newrelic-java.zip
+# Replace old newrelic.jar with new version
+```
+
+**Step 2: Update newrelic.yml**
 ```yaml
 # OLD (NewRelic SaaS)
 common:
@@ -241,9 +264,9 @@ common:
   license_key: 'dummy-key-12345'  # Not validated
 ```
 
-**Step 2: Restart the service** to pick up new configuration.
+**Step 3: Restart the service** to pick up new configuration.
 
-**That's it** - no code changes, just config + restart per service.
+**That's it** - no code changes required (though agent upgrade recommended if on Java 8+).
 
 ### Rollout Strategy
 

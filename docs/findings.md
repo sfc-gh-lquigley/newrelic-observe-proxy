@@ -1,5 +1,18 @@
 # Test Findings
 
+## Critical Discovery: Agent Version Matters
+
+**Problem**: NewRelic Java Agent v6.5.0 (EOL 2020, last Java 7 compatible) has internal bugs preventing connection to custom backends.
+
+**Solution**: Upgrade to NewRelic Java Agent v9.3.0 (latest 2024).
+
+| Agent Version | Java Version | Custom Backend Support | Notes |
+|---------------|--------------|------------------------|-------|
+| **v6.5.0** | Java 7 | ❌ **Broken** | NullPointerException after preconnect; never calls connect endpoint |
+| **v9.3.0** | Java 8+ | ✅ **Works** | Successfully connects and sends all telemetry with minimal preconnect response |
+
+**Impact**: Original goal of using existing Java 7 services with v6.5.0 agent is not viable without patching the agent. Services must upgrade to Java 8+ to use v9.3.0.
+
 ## Status Summary
 
 ✅ **Infrastructure** - Fully automated deployment via Terraform  
@@ -18,10 +31,11 @@ The NewRelic Java agent requires a minimal preconnect response format:
 ```
 
 **Key Findings:**
-- Agent v6.5.0 (Java 7 compatible, EOL 2020) - ❌ Has NullPointerException with security_policies
-- Agent v9.3.0 (Latest, 2024) - ✅ Works perfectly with minimal response (CubeAPM style)
-- Security policies in preconnect response cause agent to fail before connect call
-- Minimal response format (just redirect_host) allows successful connection
+- Agent v6.5.0 (Java 7 compatible, EOL 2020) - ❌ Has NullPointerException with security_policies in preconnect
+- Agent v9.3.0 (Latest, 2024, requires Java 8+) - ✅ Works perfectly with minimal response (CubeAPM style)
+- Security policies in preconnect response cause both agents to fail initially
+- Minimal response format (just redirect_host) allows v9.3.0 to succeed
+- **v6.5.0 still fails even with minimal response** - internal agent bug, not fixable via nginx config
 
 ## What Works
 
@@ -92,7 +106,30 @@ ssh -i ~/.ssh/newrelic-observe-proxy-key.pem ec2-user@<nginx-ip> \
 
 ## Next Steps
 
-1. **Generate test traffic** - Create HTTP requests to Java service to generate spans and traces
-2. **Validate Observe ingestion** - Check if telemetry is successfully reaching Observe platform
-3. **Test OPAL queries** - Write Observe queries to flatten NewRelic JSON into datastreams
+1. **Transform NewRelic data format** - Nginx needs to decompress gzip payloads and transform NewRelic JSON schema to Observe format
+2. **Alternative: Observe NewRelic endpoint** - Check if Observe has a native NewRelic ingestion endpoint (like `/v1/newrelic`)
+3. **Test OPAL queries** - Once data lands, write Observe queries to flatten NewRelic JSON into datastreams
 4. **Performance testing** - Validate nginx can handle 200 services at production scale
+
+## Current Blocker
+
+**Observe HTTP 400 Errors - Data Format Incompatibility**
+
+The nginx proxy successfully forwards NewRelic telemetry to Observe's `/v1/http/newrelic/` endpoint, but Observe returns HTTP 400 errors:
+
+```json
+{"timestamp":"2026-07-15T00:48:36+00:00","status":400,"body_bytes":94}
+```
+
+**Root Cause**: NewRelic agent sends proprietary protocol data:
+- Gzip-compressed JSON payloads (`\u001F�\b` = gzip magic number)
+- NewRelic-specific schema (agent_run_id, marshal_format, protocol_version)
+- Methods: analytic_event_data, span_event_data, metric_data, transaction_sample_data
+
+Observe's `/v1/http` endpoint expects generic telemetry formats (JSON, CSV, msgpack) but receives NewRelic's proprietary format.
+
+**Potential Solutions**:
+1. Add nginx Lua module to decompress and transform data before forwarding
+2. Deploy separate transformer service between nginx and Observe
+3. Check if Observe has NewRelic-compatible endpoint
+4. Use OpenTelemetry collector to convert NewRelic → OTLP → Observe
