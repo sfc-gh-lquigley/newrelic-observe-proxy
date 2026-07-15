@@ -1,41 +1,32 @@
 # Test Findings
 
-## Critical Discovery: Agent Version Matters
-
-**Problem**: NewRelic Java Agent v6.5.0 (EOL 2020, last Java 7 compatible) has internal bugs preventing connection to custom backends.
-
-**Solution**: Upgrade to NewRelic Java Agent v9.3.0 (latest 2024).
-
-| Agent Version | Java Version | Custom Backend Support | Notes |
-|---------------|--------------|------------------------|-------|
-| **v6.5.0** | Java 7 | ❌ **Broken** | NullPointerException after preconnect; never calls connect endpoint |
-| **v9.3.0** | Java 8+ | ✅ **Works** | Successfully connects and sends all telemetry with minimal preconnect response |
-
-**Impact**: Original goal of using existing Java 7 services with v6.5.0 agent is not viable without patching the agent. Services must upgrade to Java 8+ to use v9.3.0.
-
 ## Status Summary
 
 ✅ **Infrastructure** - Fully automated deployment via Terraform  
 ✅ **Nginx Proxy** - Successfully mocks NewRelic collector API  
 ✅ **SSL Trust** - Certificate generated with SAN and trusted by Java  
-✅ **Agent Connection** - NewRelic v9.3.0 successfully connects and sends telemetry  
-✅ **Telemetry Flow** - Agent sending metrics, logs, events, and spans to nginx proxy  
+✅ **Preconnect Flow** - Agent receives redirect_host and security policies  
+⚠️ **Agent Issue** - NewRelic v6.5.0 has internal NullPointerException preventing connect call
 
-## Solution
+## Known Issue
 
-**Working Configuration: Agent v9.3.0 + Minimal Preconnect**
+**NewRelic Java Agent v6.5.0 Limitation**
 
-The NewRelic Java agent requires a minimal preconnect response format:
-```json
-{"return_value": {"redirect_host": "172.31.39.62"}}
+After successfully receiving preconnect response:
+```
+Received JSON(preconnect): {"return_value": {"redirect_host": "172.31.39.62", "security_policies": {...}}}
+LASP Policies received from server side: {...}
+Failed to connect: java.lang.NullPointerException
 ```
 
-**Key Findings:**
-- Agent v6.5.0 (Java 7 compatible, EOL 2020) - ❌ Has NullPointerException with security_policies in preconnect
-- Agent v9.3.0 (Latest, 2024, requires Java 8+) - ✅ Works perfectly with minimal response (CubeAPM style)
-- Security policies in preconnect response cause both agents to fail initially
-- Minimal response format (just redirect_host) allows v9.3.0 to succeed
-- **v6.5.0 still fails even with minimal response** - internal agent bug, not fixable via nginx config
+Agent never proceeds to call connect endpoint. This appears to be an internal limitation in v6.5.0 (released 2020, EOL) preventing custom backend usage.
+
+**Tested Configurations:**
+- ❌ Full preconnect response with security_policies - NullPointerException
+- ❌ Minimal preconnect response (just redirect_host) - Still NullPointerException
+- ❌ Different redirect_host formats - No change
+
+**Root Cause:** Internal agent bug, not nginx configuration issue. v6.5.0 was designed only for NewRelic SaaS backend.
 
 ## What Works
 
@@ -47,42 +38,25 @@ The NewRelic Java agent requires a minimal preconnect response format:
 
 2. **Nginx Proxy**
    - Accepts HTTPS on port 443
-   - Returns minimal preconnect response: `{"return_value": {"redirect_host": "172.31.39.62"}}`
-   - Returns complete connect response with agent_run_id and config
-   - Forwards all telemetry to Observe HTTP ingest
+   - Returns proper preconnect response with redirect_host
+   - Returns complete connect response with all required fields
+   - Configured to forward telemetry to Observe HTTP ingest
 
-3. **Agent v9.3.0 Telemetry**
-   - Preconnect succeeds
-   - Connect succeeds (gets mock-run-id-12345)
-   - Sends analytic_event_data (transaction events)
-   - Sends log_event_data (application logs)
-   - Sends metric_data (performance metrics)
-   - Sends update_loaded_modules (jar inventory)
-   - Sends get_agent_commands (command polling)
+3. **Agent Configuration**
+   - Points to nginx instead of NewRelic SaaS
+   - SSL handshake succeeds
+   - Preconnect call succeeds
+   - Parses redirect_host: `"172.31.39.62"`
+   - Receives LASP security policies
 
-## Evidence from Logs
-
-**Agent Logs (00:38:06):**
-```
-Sent JSON(analytic_event_data) to: https://172.31.39.62:443/agent_listener/invoke_raw_method?method=analytic_event_data&...&run_id=mock-run-id-12345
-Sent JSON(log_event_data) to: https://172.31.39.62:443/agent_listener/invoke_raw_method?method=log_event_data&...&run_id=mock-run-id-12345
-Sent JSON(metric_data) to: https://172.31.39.62:443/agent_listener/invoke_raw_method?method=metric_data&...&run_id=mock-run-id-12345
-```
-
-**Nginx Logs:**
-```json
-{"timestamp":"2026-07-15T00:38:06+00:00","method":"POST","uri":"/agent_listener/invoke_raw_method?method=connect&...","status":200}
-{"timestamp":"2026-07-15T00:38:06+00:00","method":"POST","uri":"/agent_listener/invoke_raw_method?method=analytic_event_data&...&run_id=mock-run-id-12345","status":200}
-{"timestamp":"2026-07-15T00:38:06+00:00","method":"POST","uri":"/agent_listener/invoke_raw_method?method=log_event_data&...&run_id=mock-run-id-12345","status":200}
-{"timestamp":"2026-07-15T00:38:36+00:00","method":"POST","uri":"/agent_listener/invoke_raw_method?method=metric_data&...&run_id=mock-run-id-12345","status":200}
-```
+**Blocker:** Agent v6.5.0 hits internal NullPointerException before calling connect endpoint.
 
 ## Key Discoveries
 
 - **redirect_host format**: Must be IP/hostname without port (e.g., `"172.31.39.62"` not `"172.31.39.62:443"`)
-- **Minimal response required**: Security policies in preconnect cause v6.5.0 and v9.3.0 to fail
+- **Empty redirect_host**: Causes agent to skip connect call entirely
 - **SSL requirements**: Certificate must have SAN matching connection IP and be trusted in Java cacerts
-- **Agent compatibility**: v9.3.0 works perfectly, v6.5.0 has internal bugs preventing custom backends
+- **Agent v6.5.0 limitation**: Internal bug prevents custom backend usage - not fixable via nginx configuration alone
 
 ## Quick Deploy
 
@@ -106,14 +80,24 @@ ssh -i ~/.ssh/newrelic-observe-proxy-key.pem ec2-user@<nginx-ip> \
 
 ## Next Steps
 
-1. **Transform NewRelic data format** - Nginx needs to decompress gzip payloads and transform NewRelic JSON schema to Observe format
-2. **Alternative: Observe NewRelic endpoint** - Check if Observe has a native NewRelic ingestion endpoint (like `/v1/newrelic`)
-3. **Test OPAL queries** - Once data lands, write Observe queries to flatten NewRelic JSON into datastreams
-4. **Performance testing** - Validate nginx can handle 200 services at production scale
+**For Java 7 Services (Current Blocker):**
+1. **Patch NewRelic v6.5.0 Agent** - Fix internal NullPointerException (requires agent source code modification)
+2. **Alternative APM Agents** - Test other Java 7 compatible agents (Elastic APM, AppDynamics)
+3. **Infrastructure-Level Tracing** - Use eBPF or service mesh instead of JVM-level instrumentation
+4. **Delay Migration** - Keep NewRelic SaaS until Java 8 upgrade is feasible
+
+**If Java 8+ Upgrade is Possible:**
+1. Upgrade to Java 8 JVM (most Java 7 apps are compatible)
+2. Upgrade to NewRelic v9.3.0 agent
+3. Use minimal preconnect response format in nginx
+4. Test telemetry flow to Observe
+5. Write OPAL queries to flatten NewRelic JSON
 
 ## Current Blocker
 
 **Observe HTTP 400 Errors - Data Format Incompatibility**
+
+Even if agent v6.5.0 could connect, nginx proxy forwarding to Observe returns HTTP 400 errors due to data format mismatch.
 
 The nginx proxy successfully forwards NewRelic telemetry to Observe's `/v1/http/newrelic/` endpoint, but Observe returns HTTP 400 errors:
 
@@ -128,8 +112,4 @@ The nginx proxy successfully forwards NewRelic telemetry to Observe's `/v1/http/
 
 Observe's `/v1/http` endpoint expects generic telemetry formats (JSON, CSV, msgpack) but receives NewRelic's proprietary format.
 
-**Potential Solutions**:
-1. Add nginx Lua module to decompress and transform data before forwarding
-2. Deploy separate transformer service between nginx and Observe
-3. Check if Observe has NewRelic-compatible endpoint
-4. Use OpenTelemetry collector to convert NewRelic → OTLP → Observe
+**This is a secondary issue** - first need to fix v6.5.0 agent connection, then address data transformation.
